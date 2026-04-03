@@ -1,11 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import SearchBar from './components/SearchBar';
 import ResultsGrid from './components/ResultsGrid';
-
-const PLATFORMS = [
-  'G2G', 'FunPay', 'Eldorado.gg', 'PlayerAuctions',
-  'Z2U', 'Gameflip', 'StewieShop', 'Plati.market'
-];
+import FilterBar from './components/FilterBar';
+import FilterDrawer from './components/FilterDrawer';
 
 function App() {
   const [results, setResults] = useState([]);
@@ -14,6 +11,63 @@ function App() {
   const [elapsed, setElapsed] = useState(null);
   const [query, setQuery] = useState('');
 
+  // Filter & sort state
+  const [sortMode, setSortMode] = useState('price-asc');
+  const [platformFilters, setPlatformFilters] = useState({});
+  const [priceMin, setPriceMin] = useState('');
+  const [priceMax, setPriceMax] = useState('');
+  const [hideNullPrices, setHideNullPrices] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Derive unique platforms from actual results
+  const platforms = useMemo(() => {
+    const set = new Set(results.map((r) => r.platform));
+    return [...set].sort();
+  }, [results]);
+
+  // Apply filtering + sorting
+  const filteredResults = useMemo(() => {
+    let items = [...results];
+
+    // Filter by platform
+    items = items.filter((r) => platformFilters[r.platform] !== false);
+
+    // Filter by price range
+    const min = priceMin !== '' ? parseFloat(priceMin) : null;
+    const max = priceMax !== '' ? parseFloat(priceMax) : null;
+
+    if (min !== null || max !== null || hideNullPrices) {
+      items = items.filter((r) => {
+        if (r.price == null) return !hideNullPrices;
+        if (min !== null && r.price < min) return false;
+        if (max !== null && r.price > max) return false;
+        return true;
+      });
+    }
+
+    // Sort
+    if (sortMode === 'price-asc') {
+      items.sort((a, b) => {
+        if (a.price == null && b.price == null) return 0;
+        if (a.price == null) return 1;
+        if (b.price == null) return -1;
+        return a.price - b.price;
+      });
+    } else if (sortMode === 'price-desc') {
+      items.sort((a, b) => {
+        if (a.price == null && b.price == null) return 0;
+        if (a.price == null) return 1;
+        if (b.price == null) return -1;
+        return b.price - a.price;
+      });
+    } else if (sortMode === 'platform-az') {
+      items.sort((a, b) => a.platform.localeCompare(b.platform));
+    }
+    // 'relevant' = original order, no sort needed
+
+    return items;
+  }, [results, sortMode, platformFilters, priceMin, priceMax, hideNullPrices]);
+
   const handleSearch = useCallback(async (searchQuery) => {
     if (!searchQuery.trim()) return;
     setQuery(searchQuery.trim());
@@ -21,6 +75,14 @@ function App() {
     setSearched(true);
     setResults([]);
     setElapsed(null);
+
+    // Reset filters on new search
+    setSortMode('price-asc');
+    setPlatformFilters({});
+    setPriceMin('');
+    setPriceMax('');
+    setHideNullPrices(false);
+    setFiltersOpen(false);
 
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery.trim())}`);
@@ -34,6 +96,38 @@ function App() {
       setLoading(false);
     }
   }, []);
+
+  const handlePlatformToggle = useCallback((platform) => {
+    setPlatformFilters((prev) => ({
+      ...prev,
+      [platform]: prev[platform] === false ? true : false,
+    }));
+  }, []);
+
+  const handleHideNullToggle = useCallback(() => {
+    setHideNullPrices((prev) => !prev);
+  }, []);
+
+  // Shared filter props for both FilterBar and FilterDrawer
+  const filterProps = {
+    sortMode,
+    onSortChange: setSortMode,
+    platforms,
+    platformFilters,
+    onPlatformToggle: handlePlatformToggle,
+    priceMin,
+    priceMax,
+    onPriceMinChange: setPriceMin,
+    onPriceMaxChange: setPriceMax,
+    hideNullPrices,
+    onHideNullToggle: handleHideNullToggle,
+  };
+
+  const hasActiveFilters = hideNullPrices
+    || priceMin !== ''
+    || priceMax !== ''
+    || sortMode !== 'price-asc'
+    || Object.values(platformFilters).some((v) => v === false);
 
   return (
     <div className="min-h-screen bg-white">
@@ -52,7 +146,7 @@ function App() {
           </div>
           <div className="hidden sm:flex items-center gap-1 text-xs text-text-secondary">
             <span className="inline-block w-2 h-2 rounded-full bg-accent-green animate-pulse"></span>
-            {PLATFORMS.length} platforms live
+            {platforms.length > 0 ? `${platforms.length} platforms active` : '7 platforms live'}
           </div>
         </div>
       </header>
@@ -66,35 +160,66 @@ function App() {
                 Find the <span className="text-primary">best price</span> instantly
               </h2>
               <p className="text-text-secondary text-lg max-w-xl mx-auto">
-                Compare prices for game keys, in-game currency, accounts & digital services across {PLATFORMS.length} marketplaces in real time.
+                Compare prices for game keys, in-game currency, accounts & digital services across 7 marketplaces in real time.
               </p>
             </div>
           )}
           <SearchBar onSearch={handleSearch} loading={loading} compact={searched} />
         </div>
 
+        {/* Filter controls (desktop) */}
+        {searched && !loading && results.length > 0 && (
+          <FilterBar {...filterProps} />
+        )}
+
+        {/* Mobile filter button */}
+        {searched && !loading && results.length > 0 && (
+          <div className="sm:hidden mb-4 fade-in-up">
+            <button
+              onClick={() => setFiltersOpen(true)}
+              className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-sm font-medium transition-all ${
+                hasActiveFilters
+                  ? 'border-primary text-primary bg-primary/5'
+                  : 'border-border text-text-secondary hover:border-primary/50'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              Filters{hasActiveFilters ? ' (active)' : ''}
+            </button>
+          </div>
+        )}
+
         {/* Stats bar */}
         {searched && !loading && results.length > 0 && (
           <div className="flex items-center justify-between mb-4 px-1 fade-in-up">
             <p className="text-sm text-text-secondary">
-              <span className="font-semibold text-text">{results.length}</span> results for "<span className="font-medium text-text">{query}</span>"
+              Showing <span className="font-semibold text-text">{filteredResults.length}</span>
+              {filteredResults.length !== results.length && (
+                <span> of <span className="font-semibold text-text">{results.length}</span></span>
+              )}
+              {' '}results for "<span className="font-medium text-text">{query}</span>"
               {elapsed && <span className="ml-1">in {elapsed}s</span>}
             </p>
             <p className="text-xs text-text-secondary hidden sm:block">
-              Sorted by price: low → high
+              {sortMode === 'price-asc' && 'Sorted by price: low → high'}
+              {sortMode === 'price-desc' && 'Sorted by price: high → low'}
+              {sortMode === 'platform-az' && 'Sorted by platform: A → Z'}
+              {sortMode === 'relevant' && 'Sorted by relevance'}
             </p>
           </div>
         )}
 
         {/* Results */}
-        <ResultsGrid results={results} loading={loading} searched={searched} />
+        <ResultsGrid results={filteredResults} loading={loading} searched={searched} />
 
         {/* Platform badges when idle */}
         {!searched && (
           <div className="text-center mt-8 fade-in-up" style={{ animationDelay: '0.2s' }}>
             <p className="text-xs text-text-secondary mb-3 uppercase tracking-wider font-medium">Searching across</p>
             <div className="flex flex-wrap justify-center gap-2">
-              {PLATFORMS.map(p => (
+              {['G2G', 'FunPay', 'Eldorado.gg', 'PlayerAuctions', 'Z2U', 'Gameflip', 'Plati.market'].map(p => (
                 <span key={p} className="px-3 py-1.5 bg-surface-alt border border-border rounded-full text-xs font-medium text-text-secondary hover:border-primary hover:text-primary transition-colors cursor-default">
                   {p}
                 </span>
@@ -103,6 +228,9 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Mobile filter drawer */}
+      <FilterDrawer isOpen={filtersOpen} onClose={() => setFiltersOpen(false)} {...filterProps} />
 
       {/* Footer */}
       <footer className="border-t border-border mt-16">
